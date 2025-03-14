@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+venv/
+ENV/
+.env
+
+# Data directories (you might want to exclude these from git)
+sec_fillings/
+
+# Logs
+*.log
+
+# Results
+*.csv
+
+# MacOS
+.DS_Store
