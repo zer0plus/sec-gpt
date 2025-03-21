@@ -1,264 +1,124 @@
 import os
-import time
-from datetime import datetime
-import calendar
-import pandas as pd
-from tqdm import tqdm
 import logging
-import re
-import sys
-
-from sec_edgar_downloader import Downloader
-
+from datetime import datetime
+import pandas as pd
+import json
+from datamule import Portfolio
+import shutil
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("sec_download.log"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("sec_downloader")
 
 def get_user_input():
-    """Get user input for tickers, date range, and filing types"""
-    # Get tickers from user
-    ticker_input = input("Enter ticker symbols separated by commas (e.g., TSLA,GM,F,PLUG): ").strip()
+    print("==== SEC Filing Downloader ====")
+    print("This script downloads SEC filings for specified companies.")
     
-    if not ticker_input:
-        logger.error("No tickers provided. Exiting...")
-        sys.exit(1)
-    
+    ticker_input = input("Enter ticker symbols separated by commas: ")
     tickers = [ticker.strip().upper() for ticker in ticker_input.split(',')]
     
-    # Get date range from user
-    print("\nEnter date range for SEC filings:")
-    start_year = input("Start Year (YYYY): ").strip()
-    start_month = input("Start Month (MM): ").strip()
+    print("Enter date range:")
+    start_year = input("Start Year (YYYY): ")
+    start_month = input("Start Month (MM): ")
     
-    # Validate start date inputs
-    try:
-        start_date = f"{start_year}-{start_month.zfill(2)}-01"
-        datetime.strptime(start_date, "%Y-%m-%d")
-    except ValueError:
-        logger.error("Invalid start date format. Using default of 3 years ago.")
-        three_years_ago = datetime.now().year - 3
-        start_date = f"{three_years_ago}-01-01"
-    
-    # For end date, offer current date as default
-    use_current_date = input("Use current date as end date? (y/n): ").strip().lower()
-    
-    if use_current_date == 'y' or use_current_date == 'yes':
-        end_date = datetime.now().strftime("%Y-%m-%d")
+    use_current_date = input("Use current date as end date? (y/n): ").lower() == 'y'
+    if use_current_date:
+        end_date = datetime.now()
+        end_year = str(end_date.year)
+        end_month = str(end_date.month)
+        end_day = str(end_date.day)
     else:
-        end_year = input("End Year (YYYY): ").strip()
-        end_month = input("End Month (MM): ").strip()
-        
-        # Validate end date inputs
-        try:
-            # Get last day of the month
-            last_day = str(calendar.monthrange(int(end_year), int(end_month))[1])
-            end_date = f"{end_year}-{end_month.zfill(2)}-{last_day}"
-            datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError:
-            logger.error("Invalid end date format. Using current date.")
-            end_date = datetime.now().strftime("%Y-%m-%d")
+        end_year = input("End Year (YYYY): ")
+        end_month = input("End Month (MM): ")
+        end_day = input("End Day (DD): ")
     
-    # Get filing types from user
+    start_date = f"{start_year}-{start_month.zfill(2)}-01"
+    end_date = f"{end_year}-{end_month.zfill(2)}-{end_day.zfill(2)}"
+    
     filing_types = []
-    
-    get_10k = input("Download 10-K filings? (y/n): ").strip().lower()
-    if get_10k == 'y' or get_10k == 'yes':
-        filing_types.append("10-K")
-    
-    get_10q = input("Download 10-Q filings? (y/n): ").strip().lower()
-    if get_10q == 'y' or get_10q == 'yes':
-        filing_types.append("10-Q")
-    
-    if not filing_types:
-        logger.error("No filing types selected. Defaulting to 10-K and 10-Q.")
-        filing_types = ["10-K", "10-Q"]
-    
-    # Summarize inputs for the user
-    print("\nDownload Summary:")
-    print(f"Tickers: {', '.join(tickers)}")
-    print(f"Date Range: {start_date} to {end_date}")
-    print(f"Filing Types: {', '.join(filing_types)}")
-    print()
+    if input("Download 10-K filings? (y/n): ").lower() == 'y': filing_types.append('10-K')
+    if input("Download 10-Q filings? (y/n): ").lower() == 'y': filing_types.append('10-Q')
+    if input("Download 8-K filings? (y/n): ").lower() == 'y': filing_types.append('8-K')
     
     return tickers, start_date, end_date, filing_types
 
-def create_directories():
-    """Create directories for downloads"""
-    downloads_dir = "sec_filings"
-    os.makedirs(downloads_dir, exist_ok=True)
+def main():
+    logger.info("Starting SEC filings download")
+    tickers, start_date, end_date, filing_types = get_user_input()
     
-    logger.info("Created all necessary directories")
-    return downloads_dir
-
-def download_sec_filings(downloads_dir, tickers, start_date, end_date, filing_types):
-    """Download filings using sec-edgar-downloader library"""
-    logger.info("Starting downloads with sec-edgar-downloader")
+    if not tickers or not filing_types:
+        logger.error("Missing ticker symbols or filing types. Exiting.")
+        return
     
-    # Prompt for email (required by SEC)
-    email = input("Enter your email address for SEC EDGAR access: ").strip()
-    if not email or '@' not in email:
-        logger.warning("Invalid email format. Using placeholder email.")
-        email = "user@example.com"
+    output_dir = "data"
+    os.makedirs(output_dir, exist_ok=True)
     
-    company_name = input("Enter your company/organization name (or your name): ").strip()
-    if not company_name:
-        company_name = "Individual Investor"
+    processed_count = 0
     
-    # Create downloader instance
-    dl = Downloader(company_name, email, downloads_dir)
-    
-    # Track progress
-    results = {
-        "ticker": [], 
-        "filing_type": [], 
-        "filing_date": [], 
-        "accession_number": [], 
-        "file_count": [],
-        "period_of_report": []
-    }
-    
-    # Download for each ticker and filing type
-    for ticker in tqdm(tickers, desc="Processing tickers"):
+    for ticker in tickers:
+        ticker_dir = os.path.join(output_dir, ticker)
+        os.makedirs(ticker_dir, exist_ok=True)
+        
+        logger.info(f"Processing {ticker}...")
+        
         for filing_type in filing_types:
+            filing_dir = os.path.join(ticker_dir, filing_type)
+            os.makedirs(filing_dir, exist_ok=True)
+            
+            logger.info(f"Downloading {filing_type} filings for {ticker}...")
+            portfolio = Portfolio(filing_dir)
+            
             try:
-                logger.info(f"Downloading {filing_type} filings for {ticker}")
-                
-                # Determine appropriate limit based on filing type and date range
-                start_year = int(start_date.split('-')[0])
-                end_year = int(end_date.split('-')[0])
-                years_difference = end_year - start_year + 1
-                
-                # For 10-K: typically 1 per year, for 10-Q: typically 3 per year
-                if filing_type == "10-K":
-                    limit = max(5, years_difference)  # At least 5 for good measure
-                else:  # 10-Q
-                    limit = max(15, years_difference * 4)  # At least 15 for good measure
-                
-                dl.get(
-                    filing_type, 
-                    ticker, 
-                    limit=limit,
-                    after=start_date,
-                    before=end_date
+                portfolio.download_submissions(
+                    ticker=ticker,
+                    submission_type=[filing_type],
+                    filing_date=(start_date, end_date)
                 )
                 
-                # Now correctly look in the downloads_dir
-                ticker_path = f"{downloads_dir}/sec-edgar-filings/{ticker}/{filing_type}"
-                if os.path.exists(ticker_path):
-                    for root, dirs, files in os.walk(ticker_path):
-                        if len(files) > 0 and root != ticker_path:
-                            accession_number = os.path.basename(root)
-                            filing_date = "Unknown"
-                            period_of_report = "Unknown"
-                            
-                            for file in files:
-                                if file.endswith(".txt") and "filing-details" in file:
-                                    try:
-                                        with open(os.path.join(root, file), 'r', encoding='utf-8', errors='replace') as f:
-                                            content = f.read(10000)
-                                            
-                                            # Extract filing date
-                                            date_match = re.search(r'FILED AS OF DATE:\s+(\d{8})', content)
-                                            if date_match:
-                                                date_str = date_match.group(1)
-                                                filing_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-                                            
-                                            # Extract period of report
-                                            period_match = re.search(r'CONFORMED PERIOD OF REPORT:\s+(\d{8})', content)
-                                            if period_match:
-                                                period_str = period_match.group(1)
-                                                period_of_report = f"{period_str[:4]}-{period_str[4:6]}-{period_str[6:8]}"
-                                    except Exception as e:
-                                        logger.warning(f"Error extracting date from file {file}: {str(e)}")
-                            
-                            results["ticker"].append(ticker)
-                            results["filing_type"].append(filing_type)
-                            results["filing_date"].append(filing_date)
-                            results["accession_number"].append(accession_number)
-                            results["file_count"].append(len(files))
-                            results["period_of_report"].append(period_of_report)
+                # Count actual submissions with content
+                submission_count = 0
+                for submission in portfolio.submissions:
+                    try:
+                        # Create a unique directory for each submission
+                        submission_id = datetime.now().strftime("%Y%m%d%H%M%S") + str(submission_count)
+                        submission_dir = os.path.join(filing_dir, submission_id)
+                        os.makedirs(submission_dir, exist_ok=True)
+                        
+                        # Save metadata if available
+                        if hasattr(submission, 'metadata') and submission.metadata:
+                            with open(os.path.join(submission_dir, 'metadata.json'), 'w') as f:
+                                json.dump(submission.metadata, f, indent=2)
+                        
+                        # Try to process documents
+                        has_documents = False
+                        try:
+                            for doc in submission.document_type(filing_type):
+                                has_documents = True
+                                try:
+                                    # Parse and save document data
+                                    parsed_data = doc.parse()
+                                    with open(os.path.join(submission_dir, 'parsed_data.json'), 'w') as f:
+                                        json.dump(parsed_data, f, indent=2)
+                                except Exception as e:
+                                    logger.error(f"Error parsing document: {str(e)}")
+                        except (KeyError, AttributeError) as e:
+                            logger.warning(f"Could not access documents: {str(e)}")
+                        
+                        if has_documents:
+                            submission_count += 1
+                        else:
+                            # Remove empty submission directory
+                            shutil.rmtree(submission_dir)
+                    except Exception as e:
+                        logger.error(f"Error processing submission: {str(e)}")
                 
-                # Be nice to SEC servers
-                time.sleep(1)
+                processed_count += submission_count
+                print(f"Found {submission_count} {filing_type} filings for {ticker}")
                 
             except Exception as e:
                 logger.error(f"Error downloading {filing_type} for {ticker}: {str(e)}")
-                time.sleep(10)
     
-    # Save results to CSV
-    results_df = pd.DataFrame(results)
-    results_df.to_csv("sec_filings_inventory.csv", index=False)
-    logger.info(f"Downloads complete. Results saved to sec_filings_inventory.csv")
-    
-    return results_df
-
-def analyze_results(results_df):
-    """Analyze download results and create summary statistics"""
-    logger.info("Analyzing download results")
-    
-    if results_df.empty:
-        logger.warning("No results to analyze")
-        return pd.DataFrame(columns=["ticker", "filing_type", "filing_count", "total_files"])
-    
-    # Create summary by ticker and filing type
-    summary = results_df.groupby(['ticker', 'filing_type']).agg({
-        'accession_number': 'count',
-        'file_count': 'sum'
-    }).reset_index()
-    
-    # Rename columns for clarity
-    summary.rename(columns={
-        'accession_number': 'filing_count',
-        'file_count': 'total_files'
-    }, inplace=True)
-    
-    # Save summary
-    summary.to_csv("filing_summary.csv", index=False)
-    logger.info("Analysis complete. Summary saved to filing_summary.csv")
-    
-    return summary
-
-def main():
-    """Main function to execute the download process"""
-    logger.info("Starting SEC filings download")
-    
-    print("==== SEC Filing Downloader ====")
-    print("This script will download SEC filings for specified companies.")
-    print("You'll be asked to enter ticker symbols, date range, and filing types.")
-    print("=================================\n")
-    
-    # Get user input
-    tickers, start_date, end_date, filing_types = get_user_input()
-    
-    # Create directories
-    downloads_dir = create_directories()
-    
-    # Download filings
-    results_df = download_sec_filings(downloads_dir, tickers, start_date, end_date, filing_types)
-    
-    # Analyze results
-    summary = analyze_results(results_df)
-    
-    # Log summary
-    logger.info("Download process complete!")
-    
-    if not results_df.empty:
-        logger.info(f"Total filings downloaded: {len(results_df)}")
-        logger.info(f"Total files downloaded: {results_df['file_count'].sum()}")
-    
-    print("\nDownload Summary:")
-    print(summary)
-    
-    print("\nDownloaded files are organized as follows:")
-    print(f"{downloads_dir}/sec-edgar-filings/<ticker>/<form_type>/<accession_number>/")
-    print("\nData is ready for further analysis!")
+    print(f"\nTotal filings downloaded and processed: {processed_count}")
+    print("Files are saved in the download_data/ directory")
 
 if __name__ == "__main__":
     main()

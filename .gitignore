@@ -8,8 +8,11 @@ venv/
 ENV/
 .env
 
-# Data directories (you might want to exclude these from git)
+# Files & Data directories (you might want to exclude these from git)
 sec_fillings/
+project-docs/
+data/
+plan_log.txt
 
 # Logs
 *.log
